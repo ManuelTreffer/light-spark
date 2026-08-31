@@ -1,0 +1,30 @@
+{
+  "name": "light-spark",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Dateien übertragen nur mit Licht — Bildschirm sendet, Kamera empfängt.",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "dev": "vite",
+    "dev:host": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "preact": "^10.29.0",
+    "qrcode": "^1.5.4",
+    "jsqr": "^1.4.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.2",
+    "@types/qrcode": "^1.5.5",
+    "@vitejs/plugin-basic-ssl": "^2.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.7",
+    "vite-plugin-pwa": "^1.0.3",
+    "vitest": "^3.2.4"
+  }
+}
