@@ -29,21 +29,29 @@ function buildManifest(data: Uint8Array, blockSize: number, sourceChunkSize: num
     sourceChunkSize,
     compression: 'none',
     fileHashAlgorithm: 'sha256',
-    fileHash: new Uint8Array(32), // not yet verified in PR 2 — see ReceiverSession's doc comment
+    fileHash: new Uint8Array(32), // not yet verified until Milestone 8 — see ReceiverSession's doc comment
     ...overrides,
   };
 }
 
-/** Drives `count` frames from a fresh SenderSession through a fault model
- * into a fresh ReceiverSession, and returns the receiver once done. */
-function runTransfer(
+/** Feeds every frame to `receiver` in order, awaiting each one before the
+ * next — `ReceiverSession.ingestFrame` does no internal queuing, so callers
+ * (this helper, and ui/useCamera.ts's capture loop once this is wired in for
+ * real) are the ones responsible for not overlapping calls. */
+async function feedAll(receiver: ReceiverSession, frames: readonly Uint8Array[]): Promise<void> {
+  for (const frame of frames) await receiver.ingestFrame(frame);
+}
+
+/** Drives `frameCount` frames from a fresh SenderSession through a fault
+ * model into a fresh ReceiverSession, and returns the receiver once done. */
+async function runTransfer(
   data: Uint8Array,
   blockSize: number,
   sourceChunkSize: number,
   frameCount: number,
   faults: ChannelFaultModel,
   seed: number,
-): ReceiverSession {
+): Promise<ReceiverSession> {
   const manifest = buildManifest(data, blockSize, sourceChunkSize);
   const transferId = generateTransferId();
   const sender = new SenderSession({ transferId, manifest, data });
@@ -54,36 +62,36 @@ function runTransfer(
   const delivered = simulateChannel(frames, faults, seed);
 
   const receiver = new ReceiverSession();
-  for (const frame of delivered) receiver.ingestFrame(frame);
+  await feedAll(receiver, delivered);
   return receiver;
 }
 
 describe('SenderSession + ReceiverSession — reconstruction', () => {
-  it('reconstructs a multi-block file with no channel faults', () => {
+  it('reconstructs a multi-block file with no channel faults', async () => {
     const data = randomBytes(9000, 1); // several blocks at blockSize=2000
-    const receiver = runTransfer(data, 2000, 180, 400, NO_FAULTS, 1);
+    const receiver = await runTransfer(data, 2000, 180, 400, NO_FAULTS, 1);
     expect(receiver.state.status).toBe('completed');
     expect(receiver.getAssembledData()).toEqual(data);
   });
 
-  it('reconstructs despite dropped frames', () => {
+  it('reconstructs despite dropped frames', async () => {
     const data = randomBytes(6000, 2);
     const faults: ChannelFaultModel = { frameDropRate: 0.3, frameDuplicateRate: 0, frameCorruptionRate: 0, frameReorderWindow: 0 };
-    const receiver = runTransfer(data, 1500, 150, 1200, faults, 42);
+    const receiver = await runTransfer(data, 1500, 150, 1200, faults, 42);
     expect(receiver.getAssembledData()).toEqual(data);
   });
 
-  it('reconstructs despite reordered frames — block order does not matter', () => {
+  it('reconstructs despite reordered frames — block order does not matter', async () => {
     const data = randomBytes(6000, 3);
     const faults: ChannelFaultModel = { frameDropRate: 0, frameDuplicateRate: 0, frameCorruptionRate: 0, frameReorderWindow: 25 };
-    const receiver = runTransfer(data, 1500, 150, 500, faults, 7);
+    const receiver = await runTransfer(data, 1500, 150, 500, faults, 7);
     expect(receiver.getAssembledData()).toEqual(data);
   });
 
-  it('duplicate frames do not change the result', () => {
+  it('duplicate frames do not change the result', async () => {
     const data = randomBytes(4000, 4);
     const faults: ChannelFaultModel = { frameDropRate: 0, frameDuplicateRate: 0.5, frameCorruptionRate: 0, frameReorderWindow: 0 };
-    const receiver = runTransfer(data, 1000, 150, 400, faults, 11);
+    const receiver = await runTransfer(data, 1000, 150, 400, faults, 11);
     expect(receiver.getAssembledData()).toEqual(data);
     // The dedup path (entry.seenSeeds) must actually have fired, not just
     // "happened to still work" — otherwise this test wouldn't be exercising
@@ -91,14 +99,14 @@ describe('SenderSession + ReceiverSession — reconstruction', () => {
     expect(receiver.state.duplicateFrames).toBeGreaterThan(0);
   });
 
-  it('reconstructs under combined loss, duplication, corruption, and reordering', () => {
+  it('reconstructs under combined loss, duplication, corruption, and reordering', async () => {
     const data = randomBytes(12000, 5);
     const faults: ChannelFaultModel = { frameDropRate: 0.25, frameDuplicateRate: 0.15, frameCorruptionRate: 0.05, frameReorderWindow: 10 };
-    const receiver = runTransfer(data, 3000, 200, 3000, faults, 99);
+    const receiver = await runTransfer(data, 3000, 200, 3000, faults, 99);
     expect(receiver.getAssembledData()).toEqual(data);
   });
 
-  it('a receiver joining mid-stream still completes (systematic pass repeats via block cycling)', () => {
+  it('a receiver joining mid-stream still completes (systematic pass repeats via block cycling)', async () => {
     const data = randomBytes(6000, 6);
     const manifest = buildManifest(data, 1500, 150);
     const transferId = generateTransferId();
@@ -112,46 +120,46 @@ describe('SenderSession + ReceiverSession — reconstruction', () => {
     const lateFrames = allFrames.slice(allFrames.length / 2);
 
     const receiver = new ReceiverSession();
-    for (const frame of lateFrames) receiver.ingestFrame(frame);
+    await feedAll(receiver, lateFrames);
     expect(receiver.getAssembledData()).toEqual(data);
   });
 });
 
 describe('Block boundary edge cases (Milestone 2.6)', () => {
-  it('an empty (0-byte) file is one block of length 0', () => {
+  it('an empty (0-byte) file is one block of length 0', async () => {
     const data = new Uint8Array(0);
-    const receiver = runTransfer(data, 1000, 100, 50, NO_FAULTS, 20);
+    const receiver = await runTransfer(data, 1000, 100, 50, NO_FAULTS, 20);
     expect(receiver.state.blocks.length).toBe(1);
     expect(receiver.getAssembledData()).toEqual(data);
   });
 
-  it('a 1-byte file', () => {
+  it('a 1-byte file', async () => {
     const data = new Uint8Array([42]);
-    const receiver = runTransfer(data, 1000, 100, 50, NO_FAULTS, 21);
+    const receiver = await runTransfer(data, 1000, 100, 50, NO_FAULTS, 21);
     expect(receiver.getAssembledData()).toEqual(data);
   });
 
-  it('data length exactly on a source-chunk boundary', () => {
+  it('data length exactly on a source-chunk boundary', async () => {
     const data = randomBytes(300, 22); // exactly 2 chunks of 150
-    const receiver = runTransfer(data, 1000, 150, 100, NO_FAULTS, 22);
+    const receiver = await runTransfer(data, 1000, 150, 100, NO_FAULTS, 22);
     expect(receiver.getAssembledData()).toEqual(data);
   });
 
-  it('data length exactly on a block boundary (multiple whole blocks, no short tail)', () => {
+  it('data length exactly on a block boundary (multiple whole blocks, no short tail)', async () => {
     const data = randomBytes(4000, 23); // exactly 4 blocks of 1000
     const plan = createBlockPlan(data.length, 1000);
     expect(plan.blockCount).toBe(4);
     expect(plan.getBlockRange(3).length).toBe(1000); // last block is NOT short here
-    const receiver = runTransfer(data, 1000, 150, 800, NO_FAULTS, 23);
+    const receiver = await runTransfer(data, 1000, 150, 800, NO_FAULTS, 23);
     expect(receiver.getAssembledData()).toEqual(data);
   });
 
-  it('a short final block (not a multiple of blockSize)', () => {
+  it('a short final block (not a multiple of blockSize)', async () => {
     const data = randomBytes(3300, 24); // 4 blocks of 1000, last one 300 bytes
     const plan = createBlockPlan(data.length, 1000);
     expect(plan.blockCount).toBe(4);
     expect(plan.getBlockRange(3).length).toBe(300);
-    const receiver = runTransfer(data, 1000, 150, 800, NO_FAULTS, 24);
+    const receiver = await runTransfer(data, 1000, 150, 800, NO_FAULTS, 24);
     expect(receiver.getAssembledData()).toEqual(data);
   });
 
@@ -165,7 +173,7 @@ describe('Block boundary edge cases (Milestone 2.6)', () => {
 });
 
 describe('Block integrity — a corrupted block is never marked verified', () => {
-  it('rejects a block whose reconstructed bytes do not match the announced CRC', () => {
+  it('rejects a block whose reconstructed bytes do not match the announced CRC', async () => {
     const data = randomBytes(1200, 30);
     const manifest = buildManifest(data, 1200, 150); // single block
     const transferId = generateTransferId();
@@ -188,7 +196,7 @@ describe('Block integrity — a corrupted block is never marked verified', () =>
       if (frame[3] === FrameType.BlockComplete) {
         view.setUint32(27 + 4, wrongCrc, false); // CommonFrameHeader is 27 bytes; blockCrc32 is payload offset 4
       }
-      receiver.ingestFrame(frame);
+      await receiver.ingestFrame(frame);
     }
 
     const block = receiver.state.blocks[0];
@@ -196,7 +204,7 @@ describe('Block integrity — a corrupted block is never marked verified', () =>
     expect(receiver.getAssembledData()).toBeNull();
   });
 
-  it('recovers once a correct BlockComplete frame arrives (no permanent poisoning)', () => {
+  it('recovers once a correct BlockComplete frame arrives (no permanent poisoning)', async () => {
     const data = randomBytes(1200, 31); // exactly 8 chunks of 150 — systematic pass alone completes it
     const manifest = buildManifest(data, 1200, 150);
     const transferId = generateTransferId();
@@ -207,18 +215,18 @@ describe('Block integrity — a corrupted block is never marked verified', () =>
     const sender = new SenderSession({ transferId, manifest, data, manifestEveryNFrames: 100, blockCompleteEveryNFrames: 15 });
     const receiver = new ReceiverSession();
 
-    for (let i = 0; i < 9; i++) receiver.ingestFrame(sender.next()); // 1 manifest + 8 data (seeds 0-7)
+    for (let i = 0; i < 9; i++) await receiver.ingestFrame(sender.next()); // 1 manifest + 8 data (seeds 0-7)
     expect(receiver.state.blocks[0].status).toBe('decoded'); // solved, not yet verified
 
     // Now let the stream continue — a real BlockComplete follows within this span.
-    for (let i = 0; i < 20; i++) receiver.ingestFrame(sender.next());
+    for (let i = 0; i < 20; i++) await receiver.ingestFrame(sender.next());
     expect(receiver.state.blocks[0].status).toBe('verified');
     expect(receiver.getAssembledData()).toEqual(data);
   });
 });
 
 describe('Memory bound — active block decoders (Milestone 2.4)', () => {
-  it('never keeps more than maxActiveBlockDecoders blocks in the "receiving" state at once', () => {
+  it('never keeps more than maxActiveBlockDecoders blocks in the "receiving" state at once', async () => {
     const sourceChunkSize = 100;
     const blockSize = 1000; // 10 chunks/block
     const totalBlocks = 8;
@@ -244,7 +252,7 @@ describe('Memory bound — active block decoders (Milestone 2.4)', () => {
     const manifestBytes = new Uint8Array(manifestHeader.length + manifestPayload.length);
     manifestBytes.set(manifestHeader, 0);
     manifestBytes.set(manifestPayload, manifestHeader.length);
-    receiver.ingestFrame(manifestBytes);
+    await receiver.ingestFrame(manifestBytes);
 
     // Now feed exactly one (non-completing, non-systematic) drop for every
     // block, round and round, without ever sending enough for any block to
@@ -269,7 +277,7 @@ describe('Memory bound — active block decoders (Milestone 2.4)', () => {
         const frame = new Uint8Array(header.length + payload.length);
         frame.set(header, 0);
         frame.set(payload, header.length);
-        receiver.ingestFrame(frame);
+        await receiver.ingestFrame(frame);
 
         const receivingCount = receiver.state.blocks.filter((b) => b.status === 'receiving').length;
         expect(receivingCount).toBeLessThanOrEqual(maxActive);

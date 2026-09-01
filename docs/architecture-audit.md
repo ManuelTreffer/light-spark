@@ -407,10 +407,10 @@ src/
                   protocol-v2.md) lives entirely in this new folder.
 
   transfer/       IMPLEMENTED (PR 2): blockPlan.ts, senderSession.ts,
-                  receiverSession.ts, faultModel.ts. Resume handling stays
-                  NOT YET STARTED (Milestone 4 / PR 3) — ReceiverSession
-                  currently keeps verified blocks in memory only, bounded by
-                  MAX_TRANSFER_BYTES but not yet persisted anywhere.
+                  receiverSession.ts, faultModel.ts. Resume handling
+                  IMPLEMENTED (PR 3) — ReceiverSession takes an optional
+                  storage/ repository and resumes already-verified blocks
+                  from it automatically; see docs/storage.md.
 
   fountain/       RENAME/PROMOTE from core/fountain.ts + core/rng.ts.
                   Encoder/decoder logic ports close to 1:1; new: decoder
@@ -442,8 +442,9 @@ src/
                   handling this is where it'd be shared. Not urgent to move
                   before Milestone 5 (tiles) actually needs it.
 
-  storage/        NEW — no prior art. TransferRepository over IndexedDB
-                  (Milestone 4).
+  storage/        IMPLEMENTED (PR 3): types.ts, indexedDbTransferRepository.ts.
+                  See docs/storage.md for the schema and docs/adr/0005 for
+                  the fake-indexeddb testing decision.
 
   workers/        NEW — no prior art (see Risk #3).
 
@@ -658,3 +659,69 @@ an unchanged production bundle (`transfer/` isn't imported by any UI or
 channel code yet, same reasoning as PR 1). No lint step ran, for the same
 recorded reason as PR 1 (`protocol-v2.md` §6 item 4) — still deferred, still
 not silently skipped.
+
+---
+
+## 13. PR 3 — status: implemented
+
+Scope, per the roadmap's own PR 3 definition ("IndexedDB-Abstraktion,
+verifizierte Blöcke speichern, Transfer wiederaufnehmen, gespeicherte
+Transfers verwalten") and Milestone 4's acceptance criteria — done, in
+`src/storage/` plus an integration into `src/transfer/receiverSession.ts`:
+
+1. ✅ `src/storage/types.ts`: the `TransferRepository` interface exactly as
+   the roadmap sketched it (`saveManifest`/`loadManifest`,
+   `saveBlock`/`loadBlock`, `saveReceiveState`/`loadReceiveState`,
+   `listTransfers`, `deleteTransfer`), plus `PersistedReceiveState`,
+   `StoredTransferSummary`, and `StorageUnavailableError` — no DOM or
+   IndexedDB types anywhere in this file.
+2. ✅ `src/storage/indexedDbTransferRepository.ts`: the only file that
+   touches the real IndexedDB API. A genuinely new problem for this test
+   suite — Node has no IndexedDB, and neither does `jsdom` — resolved by
+   adding `fake-indexeddb` as this initiative's first new dependency
+   (dev-only, zero production footprint). See ADR
+   `0005-indexeddb-resume.md` for that decision and for why block
+   *decoder* state (as opposed to verified block *bytes*) is deliberately
+   not persisted, matching Milestone 4.2's own first-version scoping.
+3. ✅ `src/transfer/receiverSession.ts` extended (not replaced) with an
+   optional `repository` option: a new manifest is checked against storage
+   before being applied — matching, it's a resume (already-verified blocks
+   load straight from storage, skipping Fountain decode for them entirely);
+   absent, it's saved as a fresh transfer; differing, it's a conflict
+   (Milestone 4.4) that halts the transfer (`status: 'failed'`) without
+   ever touching what's already stored. `ingestFrame` became `async` as a
+   direct, necessary consequence — PR 2's existing tests were updated to
+   `await` it (not skipped, not weakened; same assertions, correctly
+   awaited).
+4. ✅ Storage failures (Milestone 4.5) funnel through one typed error
+   (`StorageUnavailableError`) and are recorded in
+   `ReceiverSessionState.failureReason` without stopping the *current*
+   session's receiving — verified directly with a repository whose every
+   method rejects (`resume.test.ts`'s `AlwaysFailingRepository`), which
+   still completes a transfer end-to-end, in memory, with `status` staying
+   `'completed'` rather than being conflated with the unrelated
+   `'failed'`/conflict path.
+5. ✅ Tests: `storage/storage.test.ts` (11 tests, repository behaviour in
+   isolation), `transfer/resume.test.ts` (6 tests: resume with zero Data
+   frames needed for already-verified blocks, partial resume alongside
+   genuinely-still-missing blocks, two transfers stored and resumed
+   independently, deletion, manifest-conflict rejection with the original
+   stored data verified untouched, and the always-failing-repository
+   robustness test).
+6. ✅ `docs/storage.md` — schema, resume flow, conflict handling, error
+   handling, and what a future UI layer still needs to build on top.
+
+Explicitly **not** in PR 3, same as planned: no "resume a transfer" UI
+screen (Milestone 15 — `listTransfers()`/`deleteTransfer()` are fully
+implemented and tested, just not called from any `ui/` component yet), no
+persisted decoder/droplet state, no calibrated-camera or channel-profile
+persistence (nothing to persist yet — those concepts don't exist until
+later milestones), no wiring into `SendView`/`ReceiveView` or any real
+QR/Grid channel.
+
+Definition of done, checked: `npx tsc --noEmit` clean, `npx vitest run`
+green (130/130 — the prior 111 plus 19 new), `npm run build` succeeds with
+an unchanged production bundle (`storage/` isn't imported by any UI or
+channel code yet). `fake-indexeddb` is a `devDependency` only, confirmed
+absent from the production bundle by that unchanged hash. No lint step ran,
+same recorded reason as PR 1/PR 2.
