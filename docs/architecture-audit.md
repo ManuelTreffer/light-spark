@@ -399,10 +399,12 @@ src/
   app/            NEW — SenderSession/ReceiverSession orchestration (Milestone 2)
                   currently: this logic is inline in SendView.tsx/ReceiveView.tsx
 
-  protocol/       NEW module boundary — currently core/protocol.ts + core/packet.ts
-                  combined; v2 formally separates "envelope/manifest" from
-                  "wire frame" as the plan's CommonFrameHeader/DataFrameHeader
-                  split requires. v1 code stays in core/ untouched (rollback path).
+  protocol/       IMPLEMENTED (PR 1): types.ts, frameHeader.ts, manifest.ts,
+                  transferId.ts. A genuinely new module, not a merge of
+                  core/protocol.ts + core/packet.ts — those two stay exactly
+                  where they are, untouched, as the permanent v1 rollback
+                  path. v2's CommonFrameHeader/DataFrameHeader split (§3 of
+                  protocol-v2.md) lives entirely in this new folder.
 
   transfer/       NEW — BlockPlan, SenderSession, ReceiverSession, resume
                   handling, progress calculation. No prior art in the repo.
@@ -415,12 +417,14 @@ src/
   integrity/      RENAME/PROMOTE from core/crc32.ts. NEW: SHA-256 wrapper
                   (Web Crypto's crypto.subtle.digest — no self-implementation).
 
-  compression/    RENAME/PROMOTE from the deflate/inflate helpers currently
-                  inline in core/protocol.ts, generalised behind the plan's
-                  `Compressor` interface. Naming caveat: the plan's type says
-                  `CompressionAlgorithm = "none" | "gzip"`, but the existing
-                  (and recommended-to-keep) implementation is `deflate-raw`,
-                  not gzip — see protocol-v2.md open question.
+  compression/    NOT YET STARTED — still a future rename/promote from the
+                  deflate/inflate helpers currently inline in
+                  core/protocol.ts, generalised behind the plan's
+                  `Compressor` interface once a milestone needs it as its
+                  own module (Milestone 8). The `CompressionAlgorithm` type
+                  itself already exists, in src/protocol/types.ts, as
+                  `'none' | 'deflate'` — resolved naming, not `"gzip"`, see
+                  protocol-v2.md §6 item 3.
 
   channels/       KEPT AS-IS structurally. beacon/qr/spark-grid subfolders
                   already exist and already match the plan's target layout.
@@ -484,78 +488,99 @@ map for *later* milestones, recorded now so each future PR can point back to
 
 ---
 
-## 10. PR 1 plan (next step, not yet started)
+## 10. PR 1 plan — status: implemented
 
-Scope, per the plan's own Milestone 1 and its explicit "erste Lieferung"
-phasing — **types and binary (de)serialization only, zero behavioural change
-to any shipping channel:**
+All items below are done, in `src/protocol/`, on top of this same audit (PR 1
+turned out to be one PR containing both the audit and the implementation,
+delivered as two sequential pushes to it — matching the original roadmap's
+own PR 1 scope definition, "Architektur-Audit, Protocol v2 Types, binäre
+Serialisierung, Golden Vectors, keine sichtbare Funktionsänderung", rather
+than being split into two separate PRs):
 
-1. `src/protocol/` (new folder): `TransferManifest`, `FrameType`,
-   `CommonFrameHeader`, `DataFrameHeader` as TypeScript interfaces/enums,
-   matching `protocol-v2.md`'s field tables exactly.
-2. Binary serializers/deserializers for the manifest and both header shapes
-   (`encodeManifest`/`decodeManifest`, `encodeFrameHeader`/`decodeFrameHeader`
-   or similar), written the same way `core/packet.ts` already is: explicit
-   `DataView` offsets, no JSON, no `any`.
-3. Validation at every deserialize boundary *before* any allocation —
-   unknown `protocolVersion` → reject; declared `payloadLength` exceeding the
-   actual remaining bytes → reject; `blockCount`/`sourceChunkSize` beyond
-   documented maxima → reject. This directly extends the pattern already
-   shipped in `core/packet.ts`'s `MAX_TOTAL_BYTES`/`MAX_CHUNK_COUNT` checks.
-4. Golden-vector tests: hand-computed byte sequences for (a) a minimal valid
-   manifest, (b) a minimal valid data frame header, (c) each documented
-   rejection case (bad magic, bad version, truncated buffer, oversized
-   declared length) — as literal `Uint8Array` fixtures, not just
-   round-trip-through-the-encoder tests, so a future accidental wire-format
-   change gets caught even if encoder and decoder change in lockstep by
-   mistake.
-5. `docs/protocol-v2.md` finalized against whatever falls out of implementing
-   #1–4 (the field widths in the current draft are a proposal; if reality
-   forces a change, the doc gets updated in the same PR, not after).
-6. `docs/adr/0001-block-based-transfer.md` and
-   `docs/adr/0002-protocol-versioning.md` — recording the block-transfer
-   rationale and the magic-byte/version-field co-existence strategy with v1
-   (§3 of `protocol-v2.md`).
-7. Explicitly **not** in PR 1: no change to `SendView`/`ReceiveView`, no new
-   `FrameType` actually being sent over any channel, no `SenderSession`/
-   `ReceiverSession`, no block splitting. The new protocol module exists and
-   is fully tested but is not wired into anything yet — that's PR 2.
+1. ✅ `src/protocol/types.ts`: `TransferManifest`, `ManifestPayload`,
+   `FrameType`, `CommonFrameHeader`, `DataFrameHeader`, `CompressionAlgorithm`,
+   `HashAlgorithm`, and every sizing constant (`MAX_FILE_NAME_BYTES`,
+   `MAX_TRANSFER_BYTES`, etc.), matching `protocol-v2.md`'s field tables
+   exactly.
+2. ✅ `src/protocol/frameHeader.ts` (`encodeCommonFrameHeader` /
+   `decodeCommonFrameHeader`, `encodeDataFrameHeader` /
+   `decodeDataFrameHeader`) and `src/protocol/manifest.ts`
+   (`encodeManifest` / `decodeManifest`) — written the same way
+   `core/packet.ts` already is: explicit `DataView` offsets, no JSON, no
+   `any`. `src/protocol/transferId.ts` adds `generateTransferId` (via
+   `crypto.getRandomValues`) plus equality/hex helpers.
+3. ✅ Validation at every deserialize boundary *before* any allocation or
+   trust — unknown `protocolVersion`/`frameType` → reject; declared
+   `payloadLength` exceeding the actual remaining bytes → reject;
+   `blockCount` recomputed and checked against `encodedSize`/`blockSize`
+   rather than trusted; `dropletDegree`/`blockSourceChunkCount` range- and
+   consistency-checked, including the systematic-drop-implies-degree-1 rule.
+   This directly extends the pattern already shipped in `core/packet.ts`'s
+   `MAX_TOTAL_BYTES`/`MAX_CHUNK_COUNT` checks.
+4. ✅ Golden-vector tests in `src/protocol/protocol.test.ts`: hand-computed
+   byte sequences (with an offset-by-offset breakdown in comments) for a
+   minimal `CommonFrameHeader`, two `DataFrameHeader`s (systematic and
+   combinatorial), and a minimal `TransferManifest` — plus a dedicated test
+   tying the wire format's "systematic" convention back to
+   `core/fountain.ts`'s `pickIndices`, and exhaustive rejection-case
+   coverage (bad magic, bad version, unknown frame type, truncated buffer at
+   every byte offset, oversized declared lengths, inconsistent block counts,
+   invalid enum codes). 37 new tests, all passing alongside the existing 59.
+5. ✅ `docs/protocol-v2.md` updated in the same pass — an arithmetic error
+   in the original manifest-size worked example (mislabeling 53 bytes as 51)
+   was found while implementing and is corrected in place, with a note
+   explaining what changed and why the approved 44-byte `fileName` cap still
+   holds.
+6. ✅ `docs/adr/0001-block-based-transfer.md`,
+   `docs/adr/0002-protocol-versioning.md`, and
+   `docs/adr/0003-deterministic-fountain-seeding.md` (the last one wasn't in
+   the original PR 1 file list but is referenced directly by code comments
+   in `frameHeader.ts` for the systematic-drop convention, so it's written
+   now rather than leaving a dangling reference).
+7. As planned, explicitly **not** in this PR: no change to
+   `SendView`/`ReceiveView`, no `FrameType` actually being sent over any
+   channel, no `SenderSession`/`ReceiverSession`, no block splitting. The
+   new `protocol/` module exists and is fully tested but isn't imported by
+   any UI or channel code yet — that's PR 2.
 
-Definition of done for PR 1, concretely: `npx tsc --noEmit` clean,
-`npx vitest run` green (existing 59 tests + new protocol tests, no existing
-test touched or skipped), `npm run build` succeeds, and — since no channel's
-runtime behaviour changes — a manual smoke check that Send/Receive still work
-end-to-end is a formality, not a real risk, but worth doing once anyway.
+Definition of done, checked: `npx tsc --noEmit` clean, `npx vitest run`
+green (96/96 — the existing 59 plus 37 new), `npm run build` succeeds with
+an unchanged production bundle (the new module isn't imported anywhere yet,
+so the build output is byte-for-byte what it was before this PR — confirming
+"zero behavioural change" isn't just a claim). No lint step ran — see
+`protocol-v2.md` §6 item 4 for why that's a recorded, deliberate gap rather
+than a silently skipped one.
 
 ---
 
-## 11. Open assumptions (need a decision before PR 1 is implemented)
+## 11. Decisions from the open assumptions — resolved
 
-These are called out in detail with proposed defaults in `protocol-v2.md` §6;
-listed here for visibility:
+The six items originally listed here were approved as proposed. Full
+rationale for each lives in `protocol-v2.md` §6, which is the up-to-date
+source; summarized here for continuity with this document's own numbering:
 
-1. **`transferId` width.** Plan text says "mindestens 128 Bit". At 26 bytes
-   of `CommonFrameHeader` per frame already (see `protocol-v2.md` §2 for the
-   full breakdown), a 16-byte transfer ID is a third of that header on its
-   own. Proposal: keep the full 128 bits as specified (correctness/spec
-   compliance over the last few bytes of QR-safe payload) — but this is
-   exactly the kind of trade-off worth confirming rather than assuming.
-2. **Manifest field caps** (`fileName`, `mimeType` max lengths) — tight
-   against QR-safe's 160-byte frame capacity once wrapped in a 26-byte
-   common header. See the worked arithmetic in `protocol-v2.md` §5.
-3. **`CompressionAlgorithm` naming**: plan says `"gzip"`, existing (and
-   recommended) implementation is `deflate-raw`. Proposal: rename the type's
-   value to `"deflate"` to match reality, rather than switching the actual
-   compression to real gzip (which adds ~18 bytes of header/footer overhead
-   for zero benefit in this always-both-ends-are-this-app scenario).
-4. **ESLint**: introduce now (as part of PR 1's tooling) or defer? No
-   existing convention to preserve either way.
-5. **Block size profiles**: the plan's suggested `small/balanced/large`
-   (256 KiB/1 MiB/4 MiB) aren't yet benchmarked against this app's actual
-   channels (QR/Grid transfer effective payload is on the order of 1–17
-   KB/s depending on preset — see the README's speed table). A 4 MiB block
-   at Grid-safe's ~1.3 KB/s would take over 50 minutes just for one block's
-   systematic pass. Needs revisiting once real block-transfer benchmarking
-   exists (Milestone 2/6) — flagged, not decided, here.
+1. **`transferId` width**: 16 bytes (128 bit) — approved as specified by the
+   roadmap, despite the real header-size cost (see `protocol-v2.md` §6.2).
+2. **Manifest field caps**: `fileName` ≤ 44 bytes, `mimeType` ≤ 32 bytes —
+   approved; an arithmetic error in the original capacity table was found
+   and fixed while implementing (see `protocol-v2.md` §4-5), which changed
+   the worked numbers but not the approved cap itself.
+3. **`CompressionAlgorithm` naming**: `'none' | 'deflate'`, not the
+   roadmap's literal `"gzip"` — approved, matches the already-shipped
+   `deflate-raw` implementation.
+4. **ESLint**: resolved by deferral — not bundled into PR 1, to keep its
+   scope to "protocol types and serialization only" rather than also fixing
+   first-time lint findings across the whole existing codebase. See
+   `protocol-v2.md` §6 item 4 for the full reasoning; this is a recorded
+   decision, not an oversight.
+5. **Block size profiles**: still unbenchmarked, correctly deferred — not
+   this PR's concern (Milestone 2/6). No change from the original note: a
+   4 MiB block at Grid-safe's ~1.3 KB/s would take over 50 minutes just for
+   one block's systematic pass, so the plan's suggested 256 KiB/1 MiB/4 MiB
+   profiles need real measurement before they're load-bearing.
+6. **`MAX_TRANSFER_BYTES`**: 256 MiB — approved, implemented, still an
+   unbenchmarked proposal in the sense that no real multi-block transfer at
+   that size has been exercised yet (there's no block transfer at all until
+   PR 2).
 6. **Maximum total transfer size** the manifest is allowed to declare — no
    number exists yet; proposed in `protocol-v2.md` §4.

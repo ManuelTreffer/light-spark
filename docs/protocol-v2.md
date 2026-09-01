@@ -1,10 +1,11 @@
-# Protocol v2 — Wire Format (Design Proposal)
+# Protocol v2 — Wire Format
 
-Status: **proposal, not yet implemented.** Written as the input to PR 1
-(Milestone 1: protocol versioning + manifest). Every field width below is
+Status: **implemented in `src/protocol/` (types, binary (de)serialization,
+golden-vector tests) as of PR 1 / Milestone 1.** Every field width below is
 derived from the actual capacity of the existing channels (see
-`architecture-audit.md` §5.5), not chosen arbitrarily. Anything still open is
-called out explicitly in §6 rather than silently decided.
+`architecture-audit.md` §5.5), not chosen arbitrarily. All open questions
+from the original draft are resolved as of §6 below. Not yet wired into any
+sender/receiver — no channel emits or expects v2 frames yet (that's PR 2).
 
 All multi-byte integers are **big-endian**, matching the existing v1 formats
 (`core/packet.ts`, `core/protocol.ts`) — chosen for consistency, not because
@@ -147,7 +148,7 @@ wrapping `CommonFrameHeader`.
 
 | Offset | Size | Field | Type | Notes |
 |---|---|---|---|---|
-| 0 | 1 | fileNameLength | `uint8` | 0–48 (see §5) |
+| 0 | 1 | fileNameLength | `uint8` | 0–44 (see §5) |
 | 1 | fileNameLength | fileName | UTF-8 | sanitized the same way v1 already sanitizes received names (`sanitizeName`: strip Unicode bidi-control chars) before ever reaching the DOM or a download attribute |
 | 1+N | 1 | mimeTypeLength | `uint8` | 0–32 (see §5) |
 | 2+N | mimeTypeLength | mimeType | UTF-8 (ASCII in practice) | not trusted for content-type sniffing decisions, matching the existing `README.md` security-model note ("MIME-Type nicht blind vertrauen") |
@@ -162,10 +163,20 @@ wrapping `CommonFrameHeader`.
 | 52+N+M | 1 | createdAtPresent | `uint8` | `0` or `1` — informative-only field is optional on the wire, per the plan ("createdAt darf nur informativ sein und nicht für die Validität benötigt werden") |
 | 53+N+M | 0 or 4 | createdAt | `uint32`, only present if `createdAtPresent = 1` | Unix seconds; **never used in any validity check**, purely diagnostic. Valid until 2106 (uint32 seconds) — acceptable given it's informative-only |
 
-Fixed overhead (excluding `fileName`/`mimeType` content and the optional
-`createdAt`): **51 bytes** (2 length bytes + 4+4+4+2+2+1+1+32+1). With
-`createdAt` present: 55 bytes. Plus `fileName` (≤48) + `mimeType` (≤32) ⇒
-**worst case 135 bytes**, best case (empty name/mime, no timestamp) 51 bytes.
+Fixed, non-length-prefix overhead (`originalSize` through `createdAtPresent`,
+i.e. everything except the two length bytes, the name/mime content, and the
+optional `createdAt`): 4+4+4+2+2+1+1+32+1 = **51 bytes**. Adding the 2
+length-prefix bytes (`fileNameLength` + `mimeTypeLength`, always present even
+when empty) gives a **minimum manifest size of 53 bytes** (empty name, empty
+mime, no timestamp). With `fileName` and `mimeType` at their full caps
+(44 + 32) and `createdAt` present: 53 + 44 + 32 + 4 = **133 bytes worst
+case**; without `createdAt`, 129 bytes.
+
+*(An earlier draft of this document mislabeled this sum as "51 bytes
+including the 2 length bytes" and used a since-superseded 48-byte `fileName`
+cap, understating the true worst case. Fixed here — see §5 for what that
+means for the capacity check, which the 44-byte cap below still resolves,
+now correctly accounted for.)*
 
 `blockHashes` (the plan's §5.5 optional per-block-hash list) is **not**
 part of the v2.0 manifest. Per-block integrity is planned to travel in
@@ -192,14 +203,21 @@ since Manifest frames carry no `DataFrameHeader`):
 | Grid normal | 553 | 27 | 526 |
 | Grid turbo | 1117 | 27 | 1090 |
 
-Worst-case manifest (135 bytes, §4) **does not fit inside QR-safe's 133-byte
-budget** — by 2 bytes, with a `fileName` at its full 48-byte cap and no
-slack. It fits everywhere else, and fits QR-safe/Grid-safe comfortably for
-realistic file names (most real filenames are well under 48 bytes).
+**Resolved (approved):** `fileName` is capped at **44 bytes**, `mimeType` at
+**32 bytes** — both already reflected in the field table above and in
+`src/protocol/types.ts`'s `MAX_FILE_NAME_BYTES`/`MAX_MIME_TYPE_BYTES`.
 
-Proposed resolution (needs confirmation, see §6.5): cap `fileName` at **44
-bytes** instead of 48, which brings worst case to 131 bytes — fits inside
-every channel/preset in the table including QR-safe, with 2 bytes of slack.
+With the corrected arithmetic (§4), worst case is **133 bytes including
+`createdAt`, 129 without** — QR-safe's 133-byte budget fits the full worst
+case, including a timestamp, with **exactly zero bytes of slack**. Every
+other channel/preset fits with comfortable room. This is tighter than ideal
+(a single future field addition of any size would no longer fit QR-safe's
+worst case without also dropping `createdAt`), but it is not a defect:
+`createdAt` is explicitly optional and informative-only, so a sender packing
+a long file name onto QR-safe can simply omit it, regaining 4 bytes. This
+trade-off is recorded here rather than silently tightened further, since 44
+bytes is the approved number.
+
 44 UTF-8 bytes is short for some real filenames (long descriptive names,
 non-Latin scripts using multi-byte characters) but the UI can still show the
 *original*, untruncated name locally on the sender side (it's the sender's
@@ -213,45 +231,62 @@ be called out in the UI copy once implemented.
 
 ---
 
-## 6. Open questions (need a decision, not yet decided here)
+## 6. Decisions (approved) and what's still genuinely open
+
+Items 2, 3, 5, and 6 below were proposed in an earlier draft of this document
+and have since been **approved as written** — kept here as a record of the
+decision and its rationale, not as something still pending. Item 1 stays a
+low-stakes observation. Item 4 (ESLint) is resolved separately, by deferral
+— see the note after the list.
 
 1. **`protocolVersion` byte vs. relying purely on the 2-byte magic.** Kept
    both because a magic bump for every version increment forces every prior
    receiver to add a new magic-comparison branch, whereas a single
    `magic == 0x4C53` check plus a version-number `switch` is the more
    conventional and slightly cheaper pattern once v3/v4 exist. Low-stakes,
-   flagging for awareness rather than because it's contentious.
+   noted for awareness rather than because it's contentious.
 
-2. **`transferId` at 16 bytes (128 bit).** This is 16 of the 27
+2. **`transferId` at 16 bytes (128 bit) — approved.** This is 16 of the 27
    `CommonFrameHeader` bytes — the single largest field in the header by
-   far. The plan explicitly asks for "mindestens 128 Bit", so this document
-   proposes keeping the full width rather than unilaterally shrinking it,
-   but the cost is real: on QR-safe (160-byte capacity), a Data frame's
-   38-byte total overhead is already ~24% of the frame before any payload;
-   at 8 bytes instead of 16, that overhead drops to ~19%. **Needs an
-   explicit go/no-go from the person who wrote "mindestens 128 Bit" into the
-   plan** before PR 1 locks this in.
+   far. On QR-safe (160-byte capacity), a Data frame's 38-byte total
+   overhead is ~24% of the frame before any payload; at 8 bytes instead of
+   16 it would have been ~19%. Approved at the full 128 bits anyway, per the
+   plan's explicit "mindestens 128 Bit" — spec compliance over the last few
+   bytes of QR-safe payload. Implemented as `TRANSFER_ID_BYTES = 16` in
+   `src/protocol/types.ts`.
 
-3. **`CompressionAlgorithm` naming**: this document defines wire value
-   `1 = deflate` (i.e. `deflate-raw`, matching the already-shipped
-   `core/protocol.ts` implementation) where the plan's TypeScript sketch
-   says `"gzip"`. Real gzip adds a 10-byte header + 8-byte trailer per
-   compressed unit for zero benefit here (both ends are always this same
-   app; no interop requirement with external gzip tooling exists). Proposed:
-   the *type name* in code can still be called whatever reads best, but the
-   wire enum and actual algorithm should be `deflate-raw`, not gzip. Flagging
-   for confirmation since it's a literal deviation from the plan's text.
+3. **`CompressionAlgorithm` naming — approved.** Wire value `1 = deflate`
+   (i.e. `deflate-raw`, matching the already-shipped `core/protocol.ts`
+   implementation), not the plan's literal `"gzip"` sketch. Real gzip adds a
+   10-byte header + 8-byte trailer per compressed unit for zero benefit here
+   (both ends are always this same app; no interop requirement with
+   external gzip tooling exists). Implemented as `CompressionAlgorithm =
+   'none' | 'deflate'` in `src/protocol/types.ts`.
 
-4. **ESLint**: not part of this protocol document's scope, but blocks the
-   plan's "Linter erfolgreich ist" Definition-of-Done line — needs a
-   decision recorded in `architecture-audit.md`'s open assumptions before
-   PR 1's Definition of Done can be honestly checked off.
+4. **ESLint — resolved: deferred, not bundled into this PR.** Introducing it
+   now would mean either (a) configuring it to cover only the new
+   `src/protocol/` files, which is a strange, easy-to-forget carve-out that
+   doesn't actually deliver on the plan's repo-wide "Linter erfolgreich
+   ist" Definition-of-Done line, or (b) configuring it repo-wide, which
+   forces fixing first-time lint findings across every existing channel/UI
+   file — a scope explosion for a PR whose whole premise is "protocol types
+   and serialization only, zero behavioural change." Deferred to its own
+   small, dedicated PR instead. Recorded here so the DoD gap is explicit
+   rather than silently ignored: **this PR's `tsc --noEmit` + `vitest run`
+   + `vite build` are the actual checks that ran; no lint step exists yet
+   to run.**
 
-5. **`fileName` cap: 44 bytes (proposed) vs. 48 (original sketch) vs. some
-   other number, or accepting that QR-safe simply can't carry every
-   manifest** and treating it as "Manifest not guaranteed to fit on the most
-   robust/slowest preset" instead. This document's default (44 bytes,
-   fits everywhere) is a proposal, not a final decision.
+5. **`fileName` cap: 44 bytes — approved.** See §5's corrected capacity
+   arithmetic: 44 bytes (plus a 32-byte `mimeType` cap) makes the worst-case
+   manifest fit exactly inside QR-safe's budget, including an optional
+   `createdAt`. Implemented as `MAX_FILE_NAME_BYTES = 44` /
+   `MAX_MIME_TYPE_BYTES = 32` in `src/protocol/types.ts`.
+
+6. **`MAX_TRANSFER_BYTES` at 256 MiB — approved**, still unbenchmarked (see
+   §6 in `architecture-audit.md`'s open assumptions — block-size profiles and
+   real multi-block throughput are Milestone 2/6 territory, not this PR's).
+   Implemented as `MAX_TRANSFER_BYTES = 256 * 1024 * 1024` in
+   `src/protocol/types.ts`.
 
 6. **Maximum transfer size (`MAX_TRANSFER_BYTES`)**: proposed **256 MiB**
    as a generous but concrete ceiling — well above the README's own
