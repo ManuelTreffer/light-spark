@@ -584,3 +584,67 @@ source; summarized here for continuity with this document's own numbering:
    PR 2).
 6. **Maximum total transfer size** the manifest is allowed to declare — no
    number exists yet; proposed in `protocol-v2.md` §4.
+
+---
+
+## PR 5 — status: implemented
+
+*(Section numbering note: like PR 4, this branches directly off `main`
+rather than stacking on PR 2/3/4 — adaptive profiles have no dependency on
+`transfer/`, `storage/`, or Grid tiling. Merging PR 2 through PR 5 together
+will likely produce the same kind of small, purely textual conflict at this
+document's tail that PR 4's note already flagged — no source-code overlap
+between any of them.)*
+
+Scope, per the roadmap's own PR 5 definition ("Qualitätsmetriken,
+Profilmodell, Kalibrierungsworkflow, manuelle und automatische Empfehlung")
+and Milestone 6's acceptance criteria:
+
+1. ✅ `src/channels/profile.ts`: `ChannelProfile` plus `SPARK_GRID_PROFILES`
+   (`spark-robust`/`spark-balanced`/`spark-dense`) and `QR_PROFILES`
+   (`qr-robust`/`qr-fast`) — every field derived from and cross-checked
+   against the existing `GRID_PRESETS`/`QR_PRESETS`, never invented.
+   `tileColumns`/`tileRows`/`calibrationInterval`/`fullMarkerInterval` are
+   explicitly left unset (no measured basis for real values yet — see ADR
+   0007).
+2. ✅ `src/channels/qualityMetrics.ts`: `ChannelQualityMetrics` and
+   `QualityWindow`, built entirely from real counted events and an
+   injectable clock — no field derived from a nominal frame rate.
+3. ✅ `src/channels/profileRecommender.ts`: `ProfileRecommender` — the
+   roadmap's four hysteresis requirements implemented literally
+   (asymmetric good/bad streak thresholds, a minimum-duration cooldown,
+   manual override that resets hysteresis), plus the "overloaded device
+   never gets recommended denser" guard from Milestone 9.5, checked against
+   the *current* profile's own measured frame budget. See ADR 0007 for the
+   default values chosen and why they're an explicitly unbenchmarked
+   starting point, same as `BLOCK_PROFILES` (PR 2) was.
+4. ✅ `src/channels/calibration.ts`: `selectBestProfile` implements
+   Milestone 6.4's scoring/decision step (pick the highest real throughput
+   among candidates clearing a hit-rate floor). The *interactive*
+   half — a sender cycling through profiles in sync with a receiver
+   measuring them — is deliberately deferred; see ADR 0007 decision 5 for
+   why (needs either Milestone 10's feedback channel or a throwaway
+   synchronization scheme).
+5. ✅ Tests: `profile.test.ts` (19 tests) — profile values cross-checked
+   against their source presets rather than hardcoded a second time,
+   `QualityWindow` metrics verified against hand-computed expectations
+   including edge cases (empty window, out-of-range confidence clamping),
+   and a full hysteresis suite for `ProfileRecommender` (both switch
+   directions, the cooldown gate, floor/ceiling clamping, the overload
+   guard, the minimum-samples floor, middling windows not resetting a
+   streak, and manual override actually resetting hysteresis state rather
+   than just changing the current profile).
+
+Explicitly **not** in this PR, same pattern as every prior one: no wiring
+into `GridBeamSource`/`GridReceiver`, `QrBeamSource`/`QrReceiver`, or any UI
+screen — nothing yet calls `QualityWindow`'s `record*` methods from a real
+detection loop, and the practical question of how large a measurement
+"window" should be (frame count vs. wall-clock interval) is left to that
+future integration. No automatic *sender*-side switching (Milestone 10).
+
+Definition of done, checked: `npx tsc --noEmit` clean, `npx vitest run`
+green (115/115 on top of this PR's `main`-based starting point — 96 prior
+plus 19 new), `npm run build` succeeds with an unchanged production bundle
+(none of the new files are imported by any UI or live-channel code). No
+lint step ran, same recorded reason as every prior PR
+(`protocol-v2.md` §6 item 4).
