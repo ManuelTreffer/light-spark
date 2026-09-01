@@ -76,6 +76,8 @@ Both risky channels run as complete loopback tests — without a browser or came
 
 * The Beacon only transmits text up to 255 bytes — anything more would be unreasonable at that speed.
 
+* **Flash Beacon is currently disabled in the app** — real-world reception through a camera wasn't reliable enough yet. The code (`src/channels/beacon/`) is still there and the wiring into the UI is commented out (not deleted) in `src/ui/SendView.tsx`, `src/ui/ReceiveView.tsx`, and `src/channels/types.ts`, so it can be picked back up later.
+
 ## Structure
 
 ```text
@@ -95,6 +97,34 @@ src/
 ```
 
 The channels only deliver packets; Fountain reassembly and envelope verification happen centrally, once, in `core/assembler.ts`.
+
+## Deploying to Cloudflare Pages
+
+Light Spark is a static build (Vite + Preact, plus a service worker for the PWA) — no server or backend, so it's a good fit for Cloudflare Pages.
+
+**Via the Cloudflare dashboard (recommended):**
+
+1. Push this repo to GitHub (already done if you're reading this from there).
+2. In the Cloudflare dashboard: **Workers & Pages → Create → Pages → Connect to Git**, pick this repo.
+3. Build settings:
+   - Framework preset: `Vite`
+   - Build command: `npm run build`
+   - Build output directory: `dist`
+   - Node version: picked up automatically from `.node-version` in this repo (Node 22); no extra env vars needed, since everything runs client-side.
+4. Deploy. Every push to the connected branch gets its own build; pushes to the production branch go live on the `*.pages.dev` domain (or a custom domain you attach under **Custom domains**).
+
+Camera access (`getUserMedia`) requires a secure context — Cloudflare Pages serves everything over HTTPS by default, so that just works.
+
+**Via the CLI**, using the `wrangler.toml` already in this repo:
+
+```bash
+npm run build
+npx wrangler pages deploy dist --project-name=light-spark
+```
+
+The first run asks you to log in to Cloudflare and creates the Pages project if it doesn't exist yet.
+
+No `_redirects` file is needed — the app has no client-side routing, just one `index.html`.
 
 ## License
 

@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { TransferAssembler, type AssemblerState } from '../core/assembler';
-import { formatBytes, formatDuration, payloadFromText, type ReceivedPayload } from '../core/protocol';
+import { formatBytes, formatDuration, type ReceivedPayload } from '../core/protocol';
 import { CHANNELS, type ChannelId, type ChannelReceiver } from '../channels/types';
 import { QrReceiver } from '../channels/qr/receiver';
 import { GridReceiver } from '../channels/grid/receiver';
-import { BeaconReceiver } from '../channels/beacon/receiver';
-import { BEACON_PALETTE } from '../channels/beacon/codec';
+// Flash Beacon is temporarily disabled — real-world reception wasn't reliable
+// enough yet. Left commented out, not deleted, for future work.
+// import { BeaconReceiver } from '../channels/beacon/receiver';
+// import { BEACON_PALETTE } from '../channels/beacon/codec';
+// `payloadFromText` was only needed to build the result the (currently disabled)
+// beacon receiver hands back — see the commented-out branch below.
 import { cameraErrorMessage, useCamera, useWakeLock } from './useCamera';
 import { PayloadPreview } from './PayloadPreview';
 
@@ -23,8 +27,11 @@ export function ReceiveView() {
 
   const receiver = useMemo<ChannelReceiver>(() => {
     if (channel === 'qr') return new QrReceiver((bytes) => assembler.ingestPacket(bytes));
-    if (channel === 'grid') return new GridReceiver((bytes) => assembler.ingestPacket(bytes));
-    return new BeaconReceiver((text) => setResult({ ...payloadFromText(text), verified: true }));
+    // Flash Beacon disabled, see imports above:
+    // if (channel === 'beacon') {
+    //   return new BeaconReceiver((text) => setResult({ ...payloadFromText(text), verified: true }));
+    // }
+    return new GridReceiver((bytes) => assembler.ingestPacket(bytes));
   }, [channel, assembler]);
 
   const scanning = result === null;
@@ -46,7 +53,9 @@ export function ReceiveView() {
 
   if (result) return <PayloadPreview payload={result} onReset={reset} />;
 
-  const beaconColour = receiver instanceof BeaconReceiver ? BEACON_PALETTE[receiver.observedColour] : null;
+  // Flash Beacon disabled, see imports above:
+  // const beaconColour = receiver instanceof BeaconReceiver ? BEACON_PALETTE[receiver.observedColour] : null;
+  const beaconColour = null;
   const rate =
     state?.startedAt && state.recoveredCount > 0
       ? (state.recoveredCount / state.chunkCount) * state.totalBytes / ((Date.now() - state.startedAt) / 1000)
@@ -57,7 +66,8 @@ export function ReceiveView() {
       <section class="card">
         <div class="label">Welcher Kanal?</div>
         <div class="segmented">
-          {(['beacon', 'qr', 'grid'] as ChannelId[]).map((id) => (
+          {/* 'beacon' temporarily removed from the choices — see comments above */}
+          {(['qr', 'grid'] as ChannelId[]).map((id) => (
             <button key={id} aria-selected={channel === id} onClick={() => setChannel(id)}>
               {CHANNELS[id].icon} {CHANNELS[id].name}
             </button>

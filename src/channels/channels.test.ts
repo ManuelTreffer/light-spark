@@ -303,8 +303,10 @@ describe('homography', () => {
 });
 
 describe('channel recommendation', () => {
-  it('scales from beacon to grid with payload size', () => {
-    expect(recommendChannel(40)).toBe('beacon');
+  it('scales from qr to grid with payload size (beacon is temporarily disabled)', () => {
+    // Flash Beacon disabled, see channels/types.ts:
+    // expect(recommendChannel(40)).toBe('beacon');
+    expect(recommendChannel(40)).toBe('qr');
     expect(recommendChannel(5_000)).toBe('qr');
     expect(recommendChannel(400_000)).toBe('grid');
   });
