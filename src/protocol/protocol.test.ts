@@ -7,7 +7,7 @@ import {
   isSystematic,
 } from './frameHeader';
 import { encodeManifest, decodeManifest } from './manifest';
-import { generateTransferId, transferIdsEqual, transferIdToHex } from './transferId';
+import { generateTransferId, transferIdsEqual, transferIdToHex, transferIdFromHex } from './transferId';
 import {
   FrameType,
   FLAG_SYSTEMATIC,
@@ -43,6 +43,18 @@ describe('transferId', () => {
 
   it('formats as lowercase hex', () => {
     expect(transferIdToHex(new Uint8Array([0, 15, 255, 16]))).toBe('000fff10');
+  });
+
+  it('round-trips through hex', () => {
+    const id = generateTransferId();
+    expect(transferIdFromHex(transferIdToHex(id))).toEqual(id);
+  });
+
+  it('rejects malformed hex instead of returning junk', () => {
+    expect(transferIdFromHex('00')).toBeNull(); // too short
+    expect(transferIdFromHex('0'.repeat(31))).toBeNull(); // odd length
+    expect(transferIdFromHex('g'.repeat(32))).toBeNull(); // not hex
+    expect(transferIdFromHex('0'.repeat(34))).toBeNull(); // too long
   });
 });
 

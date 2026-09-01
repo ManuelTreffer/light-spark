@@ -26,3 +26,17 @@ export function transferIdToHex(id: Uint8Array): string {
   for (const byte of id) out += byte.toString(16).padStart(2, '0');
   return out;
 }
+
+/** Inverse of `transferIdToHex` — used by `storage/` to reconstruct a
+ * `TransferManifest.transferId` from an IndexedDB record's string key.
+ * Returns `null` for anything that isn't exactly `TRANSFER_ID_BYTES` bytes
+ * of valid hex, rather than throwing — storage records are trusted less
+ * than in-memory values, since they've round-tripped through a database. */
+export function transferIdFromHex(hex: string): Uint8Array | null {
+  if (hex.length !== TRANSFER_ID_BYTES * 2 || !/^[0-9a-f]+$/i.test(hex)) return null;
+  const id = new Uint8Array(TRANSFER_ID_BYTES);
+  for (let i = 0; i < TRANSFER_ID_BYTES; i++) {
+    id[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+  }
+  return id;
+}
