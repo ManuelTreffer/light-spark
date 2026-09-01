@@ -36,12 +36,26 @@ export function PayloadPreview({ payload, onReset }: { payload: ReceivedPayload;
         </div>
       </div>
 
+      {/*
+        The checksum only proves the bytes weren't mangled in transit — it says nothing
+        about who sent them or whether they're safe to open. Anyone with a camera pointed
+        at this screen (or vice versa) can send data here, so make that limit explicit
+        rather than let the green checkmark above read as a safety guarantee.
+      */}
+      <p class="hint" style="margin:-4px 0 10px">
+        Die Prüfsumme bestätigt nur, dass die Daten unterwegs nicht beschädigt wurden – nicht, von wem sie stammen.
+        Öffne unbekannte Dateien und Links mit der gleichen Vorsicht wie bei jedem anderen unbekannten Absender.
+      </p>
+
       <div class="preview">
         {text !== null ? (
           isLink ? (
-            <a href={text.trim()} target="_blank" rel="noreferrer noopener" style="word-break:break-all">
-              {text.trim()}
-            </a>
+            <div>
+              <p class="hint" style="margin-bottom:6px">⚠️ Link von unbekannter Quelle – vor dem Öffnen prüfen.</p>
+              <a href={text.trim()} target="_blank" rel="noreferrer noopener" style="word-break:break-all">
+                {text.trim()}
+              </a>
+            </div>
           ) : (
             <pre>{text}</pre>
           )

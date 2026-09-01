@@ -78,6 +78,16 @@ Both risky channels run as complete loopback tests — without a browser or came
 
 * **Flash Beacon is currently disabled in the app** — real-world reception through a camera wasn't reliable enough yet. The code (`src/channels/beacon/`) is still there and the wiring into the UI is commented out (not deleted) in `src/ui/SendView.tsx`, `src/ui/ReceiveView.tsx`, and `src/channels/types.ts`, so it can be picked back up later.
 
+## Security Model, Honestly
+
+* **No encryption, by design.** The data is literally light on a screen — anyone with a clear line of sight to the sending screen (a bystander, a security camera in the room) can film and decode it just like the intended receiver. Don't beam anything you wouldn't say out loud in that room.
+
+* **No sender authentication.** Whoever's camera picks up the signal is treated as the intended receiver, and whatever the camera sees is treated as the intended sender — there's no pairing or identity check. The checksum shown after a transfer (CRC-32) only proves the bytes weren't corrupted in transit; it says nothing about who sent them. Treat a received file or link with the same caution you'd give any file from a stranger.
+
+* **Untrusted input is bounds-checked before allocating.** Packet headers (`src/core/packet.ts`) carry an unauthenticated `totalBytes`/`chunkSize` that used to size the fountain decoder's buffers directly — a single crafted frame could claim a multi-gigabyte transfer and crash the receiving tab. Both fields are now capped (`MAX_TOTAL_BYTES`, `MAX_CHUNK_COUNT`) before anything is allocated.
+
+* **Received file names are sanitized**, not trusted verbatim — `src/core/protocol.ts`'s `sanitizeName` strips Unicode bidi-control characters (e.g. U+202E right-to-left override) that could otherwise disguise a dangerous extension as a harmless one.
+
 ## Structure
 
 ```text

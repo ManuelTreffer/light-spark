@@ -79,6 +79,21 @@ export interface ReceivedPayload extends Payload {
   verified: boolean;
 }
 
+/**
+ * Strips Unicode bidi-control and other invisible formatting characters from a
+ * received file name. The sender is unauthenticated, so a malicious one could use
+ * e.g. U+202E (right-to-left override) to make a dangerous extension display as a
+ * harmless one — a known filename-spoofing trick. The name only needs to stay
+ * human-readable, so dropping these costs nothing legitimate.
+ */
+function sanitizeName(name: string): string {
+  // C0 controls + DEL, zero-width space/joiners, BOM, and the bidi override/embedding
+  // range (U+202A-U+202E, U+2066-U+2069) that RLO-style spoofing relies on.
+  // eslint-disable-next-line no-control-regex
+  const stripped = name.replace(/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '');
+  return stripped.trim().slice(0, 255) || 'datei';
+}
+
 export async function parseEnvelope(bytes: Uint8Array): Promise<ReceivedPayload | null> {
   if (bytes.length < HEADER_SIZE) return null;
   if (MAGIC.some((b, i) => bytes[i] !== b)) return null;
@@ -96,7 +111,7 @@ export async function parseEnvelope(bytes: Uint8Array): Promise<ReceivedPayload 
   if (mimeEnd > bytes.length) return null;
 
   const decoder = new TextDecoder();
-  const name = decoder.decode(bytes.subarray(HEADER_SIZE, nameEnd));
+  const name = sanitizeName(decoder.decode(bytes.subarray(HEADER_SIZE, nameEnd)));
   const mime = decoder.decode(bytes.subarray(nameEnd, mimeEnd));
 
   let data = bytes.subarray(mimeEnd);

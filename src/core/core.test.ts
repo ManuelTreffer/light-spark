@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { crc32, crc8 } from './crc32';
 import { base45Encode, base45Decode } from './base45';
 import { FountainEncoder, FountainDecoder, pickIndices } from './fountain';
-import { encodePacket, decodePacket } from './packet';
+import { encodePacket, decodePacket, MAX_TOTAL_BYTES, MAX_CHUNK_COUNT } from './packet';
 import { buildEnvelope, parseEnvelope, payloadFromText } from './protocol';
 import { mulberry32 } from './rng';
 
@@ -73,6 +73,35 @@ describe('packet', () => {
     expect(decodePacket(randomBytes(50, 3))).toBeNull(); // wrong magic
     const truncated = encodePacket({ streamId: 1, totalBytes: 100, chunkSize: 200, seed: 1, payload: randomBytes(200) });
     expect(decodePacket(truncated.subarray(0, 50))).toBeNull();
+  });
+
+  it('rejects a header claiming an unreasonable total size, before any decoder is built', () => {
+    // A single tiny packet can claim any totalBytes up to 2^32-1 with chunkSize as
+    // small as 1 — without this cap the fountain decoder would try to allocate a
+    // chunk array with billions of entries and crash the tab. See MAX_TOTAL_BYTES.
+    const oversized = encodePacket({
+      streamId: 1,
+      totalBytes: MAX_TOTAL_BYTES + 1,
+      chunkSize: 1,
+      seed: 1,
+      payload: randomBytes(1),
+    });
+    expect(decodePacket(oversized)).toBeNull();
+
+    // A totalBytes just within the byte cap can still imply an absurd chunk count
+    // if chunkSize is tiny — reject on the derived chunk count too.
+    const tinyChunks = encodePacket({
+      streamId: 1,
+      totalBytes: MAX_CHUNK_COUNT + 1,
+      chunkSize: 1,
+      seed: 1,
+      payload: randomBytes(1),
+    });
+    expect(decodePacket(tinyChunks)).toBeNull();
+
+    // A realistic packet just under both caps still round-trips normally.
+    const fine = encodePacket({ streamId: 1, totalBytes: MAX_TOTAL_BYTES, chunkSize: 1024, seed: 1, payload: randomBytes(1024) });
+    expect(decodePacket(fine)).not.toBeNull();
   });
 });
 
@@ -245,5 +274,22 @@ describe('envelope', () => {
   it('rejects bytes that are not an envelope at all', async () => {
     expect(await parseEnvelope(randomBytes(100, 9))).toBeNull();
     expect(await parseEnvelope(new Uint8Array(3))).toBeNull();
+  });
+
+  it('strips bidi-override characters from a received name instead of trusting them', async () => {
+    // U+202E (right-to-left override) is the classic trick for disguising a
+    // dangerous extension as a harmless one in a displayed/downloaded file name.
+    const spoofed = `harmless\u202Egnp.exe`;
+    const envelope = await buildEnvelope({ name: spoofed, mime: 'application/octet-stream', data: randomBytes(10, 1) });
+    const parsed = await parseEnvelope(envelope);
+
+    expect(parsed!.name).not.toContain('\u202E');
+    expect(parsed!.name).toBe('harmlessgnp.exe');
+  });
+
+  it('falls back to a default name when nothing printable survives sanitizing', async () => {
+    const envelope = await buildEnvelope({ name: '\u200b\u200b', mime: 'text/plain', data: randomBytes(4, 2) });
+    const parsed = await parseEnvelope(envelope);
+    expect(parsed!.name).toBe('datei');
   });
 });
