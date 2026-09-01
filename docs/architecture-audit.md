@@ -406,8 +406,11 @@ src/
                   path. v2's CommonFrameHeader/DataFrameHeader split (§3 of
                   protocol-v2.md) lives entirely in this new folder.
 
-  transfer/       NEW — BlockPlan, SenderSession, ReceiverSession, resume
-                  handling, progress calculation. No prior art in the repo.
+  transfer/       IMPLEMENTED (PR 2): blockPlan.ts, senderSession.ts,
+                  receiverSession.ts, faultModel.ts. Resume handling stays
+                  NOT YET STARTED (Milestone 4 / PR 3) — ReceiverSession
+                  currently keeps verified blocks in memory only, bounded by
+                  MAX_TRANSFER_BYTES but not yet persisted anywhere.
 
   fountain/       RENAME/PROMOTE from core/fountain.ts + core/rng.ts.
                   Encoder/decoder logic ports close to 1:1; new: decoder
@@ -578,9 +581,80 @@ source; summarized here for continuity with this document's own numbering:
    4 MiB block at Grid-safe's ~1.3 KB/s would take over 50 minutes just for
    one block's systematic pass, so the plan's suggested 256 KiB/1 MiB/4 MiB
    profiles need real measurement before they're load-bearing.
-6. **`MAX_TRANSFER_BYTES`**: 256 MiB — approved, implemented, still an
-   unbenchmarked proposal in the sense that no real multi-block transfer at
-   that size has been exercised yet (there's no block transfer at all until
-   PR 2).
-6. **Maximum total transfer size** the manifest is allowed to declare — no
-   number exists yet; proposed in `protocol-v2.md` §4.
+6. **`MAX_TRANSFER_BYTES`**: 256 MiB — approved, implemented. As of PR 2
+   there is real (if not yet benchmarked for performance) multi-block
+   transfer exercising `BlockPlan`/`SenderSession`/`ReceiverSession` — see
+   §12 below.
+
+---
+
+## 12. PR 2 — status: implemented
+
+Scope, per the roadmap's own PR 2 definition ("BlockPlan, SenderSession,
+ReceiverSession, blockweise Fountain-Codes, Simulationstests") and Milestone
+2's acceptance criteria — done, in `src/transfer/`:
+
+1. ✅ `src/transfer/blockPlan.ts`: `BlockPlan`, `BLOCK_PROFILES`,
+   `createBlockPlan` (handles an empty file as exactly one zero-length
+   block, and a short final block, per Milestone 2.1), and
+   `createBlockPlanFromManifest` (a second, independent validation layer at
+   the receiver's actual point of use, on top of what `decodeManifest`
+   already checked — "Validiere ... vor jeder Allokation" applies at every
+   allocation site).
+2. ✅ `src/protocol/blockComplete.ts` (new, small addition to the protocol
+   layer): the `BlockComplete` frame `docs/protocol-v2.md`'s PR 1 draft left
+   reserved-but-unspecified is now defined — see ADR
+   `0004-block-integrity-via-crc.md` for why block integrity is a CRC-32 in
+   its own repeating frame rather than growing the manifest or waiting for
+   Milestone 8's SHA-256.
+3. ✅ `src/transfer/senderSession.ts`: `SenderSession` — cycles Manifest
+   (always first), Data (systematic pass, then Fountain drops, per block),
+   and BlockComplete frames forever, since PR 2 has no feedback channel to
+   tell it when a receiver is done with a block (Milestone 2.2's "Ohne
+   Rückkanal müssen Blöcke zyklisch erneut gesendet werden können"). A real
+   bug was caught here during testing and fixed before merge: the first
+   *implementation* attempt sent the manifest only after a full cadence
+   period rather than immediately, which would have left an observer with
+   nothing usable for the first `manifestEveryNFrames` frames — fixed to
+   always emit the manifest first.
+4. ✅ `src/transfer/receiverSession.ts`: `ReceiverSession` — routes Data
+   frames to a per-block `FountainDecoder`, bounded to
+   `maxActiveBlockDecoders` concurrently live decoders (default 4; least-
+   recently-touched eviction beyond that, per Milestone 2.4 — tested
+   directly, not just asserted), promotes a block to `'verified'` only once
+   its reconstructed bytes match an announced `BlockComplete` CRC (not
+   merely once the Fountain decoder is internally consistent — see ADR
+   0004), and assembles the full transfer once every block is verified.
+   Conflicting-manifest handling is intentionally minimal (ignored, never
+   applied over live state) — the full Milestone 4.4 policy arrives with
+   persistence in PR 3.
+5. ✅ `src/transfer/faultModel.ts`: `ChannelFaultModel` / `simulateChannel`,
+   matching the roadmap's Milestone 16.3 field names (`frameDropRate`,
+   `frameDuplicateRate`, `frameCorruptionRate`, `frameReorderWindow`),
+   seeded and deterministic — no flaky tests.
+6. ✅ `src/transfer/transfer.test.ts`: 15 tests covering every Milestone 2.6
+   acceptance criterion by name — multi-block reconstruction; blocks
+   arriving out of order (reordering fault); duplicate frames not changing
+   the result (and a check that the dedup path actually fired, not just
+   that the end result happened to still be correct); a corrupted block
+   never marked verified, plus a follow-up test that it *does* recover once
+   a correct `BlockComplete` arrives (no permanent poisoning); a receiver
+   joining mid-stream; combined loss/duplication/corruption/reordering; and
+   the explicit boundary set the roadmap calls out — 0 bytes, 1 byte,
+   exactly on a source-chunk boundary, exactly on a block boundary, and a
+   short final block — plus a dedicated test driving the memory-bound
+   eviction logic directly with hand-built frames.
+
+Explicitly **not** in PR 2, same as planned: no wiring into `SendView`/
+`ReceiveView` or any real QR/Grid channel (`SenderSession`/`ReceiverSession`
+are channel-agnostic — they produce/consume raw frame bytes, not canvas
+draws or camera frames), no IndexedDB persistence, no file-level SHA-256
+verification, no compression, no adaptive profiles. Each of those stays
+exactly where the roadmap put it (PR 3 onward).
+
+Definition of done, checked: `npx tsc --noEmit` clean, `npx vitest run`
+green (111/111 — the prior 96 plus 15 new), `npm run build` succeeds with
+an unchanged production bundle (`transfer/` isn't imported by any UI or
+channel code yet, same reasoning as PR 1). No lint step ran, for the same
+recorded reason as PR 1 (`protocol-v2.md` §6 item 4) — still deferred, still
+not silently skipped.

@@ -1,11 +1,15 @@
 # Protocol v2 — Wire Format
 
-Status: **implemented in `src/protocol/` (types, binary (de)serialization,
-golden-vector tests) as of PR 1 / Milestone 1.** Every field width below is
-derived from the actual capacity of the existing channels (see
-`architecture-audit.md` §5.5), not chosen arbitrarily. All open questions
-from the original draft are resolved as of §6 below. Not yet wired into any
-sender/receiver — no channel emits or expects v2 frames yet (that's PR 2).
+Status: **implemented.** `src/protocol/` (types, binary (de)serialization,
+golden-vector tests) as of PR 1 / Milestone 1; `BlockComplete` (§3.3) and the
+block-orchestration layer that actually uses this format (`src/transfer/`:
+`SenderSession`, `ReceiverSession`, `BlockPlan`) as of PR 2 / Milestone 2.
+Every field width below is derived from the actual capacity of the existing
+channels (see `architecture-audit.md` §5.5), not chosen arbitrarily. All open
+questions from the original draft are resolved as of §6 below. **Still not
+wired into any real channel** — `SenderSession`/`ReceiverSession` produce and
+consume raw frame bytes, channel-agnostically; no QR/Grid adapter displays or
+captures them yet, and neither does any UI screen (that's a later PR).
 
 All multi-byte integers are **big-endian**, matching the existing v1 formats
 (`core/packet.ts`, `core/protocol.ts`) — chosen for consistency, not because
@@ -84,21 +88,21 @@ Present at the start of **every** v2 frame, regardless of `frameType`.
 enum FrameType {
   Manifest = 1,
   Data = 2,
-  BlockComplete = 3,   // reserved, not sent in v2.0
-  TransferComplete = 4, // reserved, not sent in v2.0
-  Capability = 5,       // reserved, not sent in v2.0
+  BlockComplete = 3,     // implemented as of PR 2 — see §3.3
+  TransferComplete = 4,  // reserved, not sent in v2.0
+  Capability = 5,        // reserved, not sent in v2.0
   Feedback = 6,          // reserved, not sent in v2.0 — Milestone 10
 }
 ```
 
-Only `Manifest` and `Data` are actually emitted by PR 1's implementation
-(matching Milestone 1's scope — no block transfer, no feedback channel yet).
-The other four are reserved *in the enum* now so that their numeric values
-never get reassigned later, but a v2.0 receiver treats any of them as
-"structurally valid but nothing to do yet" rather than "unknown" — i.e. it
-recognizes the frame type, decodes the `CommonFrameHeader`, and then simply
-has no handler for the payload. This is different from a truly unknown
-`frameType` byte (§2), which is rejected outright.
+`Manifest`, `Data`, and (as of PR 2) `BlockComplete` are actually emitted.
+`TransferComplete`, `Capability`, and `Feedback` are reserved *in the enum*
+now so their numeric values never get reassigned later, but a v2.0 receiver
+treats any of them as "structurally valid but nothing to do yet" rather than
+"unknown" — i.e. it recognizes the frame type, decodes the
+`CommonFrameHeader`, and then simply has no handler for the payload. This is
+different from a truly unknown `frameType` byte (§2), which is rejected
+outright.
 
 ### 3.1 Manifest frame
 
@@ -137,6 +141,28 @@ ADR `0003-deterministic-fountain-seeding.md`.
 **Total per-frame overhead for a Data frame: 27 (common) + 11 (data) = 38
 bytes**, vs. v1's 13-byte `PACKET_HEADER_SIZE`. See §5 for what this costs in
 practice per channel/preset.
+
+### 3.3 BlockComplete frame
+
+`frameType = 3`, implemented as of PR 2 (Milestone 2.5, block integrity —
+see ADR `0004-block-integrity-via-crc.md` for why this is a separate frame
+rather than a manifest field or a wait for Milestone 8's SHA-256). No
+`DataFrameHeader`. Payload:
+
+| Offset (from end of CommonFrameHeader) | Size | Field | Type | Notes |
+|---|---|---|---|---|
+| 0 | 4 | blockIndex | `uint32` | which block this CRC applies to |
+| 4 | 4 | blockCrc32 | `uint32` | CRC-32 (IEEE) over that block's reconstructed source bytes — the same algorithm already used elsewhere in this codebase (Grid frames, the v1 envelope) |
+
+**Total: 8 bytes.** Sent cyclically for the currently active block, the same
+repeat pattern the Manifest frame uses and for the same reason: no
+back-channel exists to ask for it, so it simply comes back around. A block
+is only reported `'verified'` (`BlockReceiveState.status`) once its
+Fountain-reconstructed bytes match a `blockCrc32` received for it — not
+merely once its `FountainDecoder` reports `isComplete`, which only proves
+the drops received were *internally consistent with each other*, not that
+none of them were corrupted-but-plausible in the first place (see
+`docs/architecture-audit.md` risk #6).
 
 ---
 
