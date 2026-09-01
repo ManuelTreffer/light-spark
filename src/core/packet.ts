@@ -16,6 +16,17 @@
 export const PACKET_MAGIC = 0xa7;
 export const PACKET_HEADER_SIZE = 13;
 
+/**
+ * Upper bounds on what a single packet header may claim. `totalBytes` and
+ * `chunkSize` ride in every packet unauthenticated — anything the camera picks up
+ * gets to set them — so without a cap, one crafted frame could make the fountain
+ * decoder try to allocate a chunk array with billions of entries and crash the tab.
+ * 16 MiB is comfortably above the app's own Spark Grid ceiling (8 MB, see
+ * `channels/types.ts`), so no legitimate transfer is affected.
+ */
+export const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+export const MAX_CHUNK_COUNT = 200_000;
+
 export interface Packet {
   streamId: number;
   totalBytes: number;
@@ -44,6 +55,7 @@ export function decodePacket(bytes: Uint8Array): Packet | null {
   const chunkSize = view.getUint16(7, false);
   const totalBytes = view.getUint32(3, false);
   if (chunkSize === 0 || totalBytes === 0) return null;
+  if (totalBytes > MAX_TOTAL_BYTES || Math.ceil(totalBytes / chunkSize) > MAX_CHUNK_COUNT) return null;
   if (bytes.length < PACKET_HEADER_SIZE + chunkSize) return null;
 
   return {
