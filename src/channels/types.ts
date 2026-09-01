@@ -83,7 +83,9 @@ export const CHANNELS: Record<ChannelId, ChannelMeta> = {
 
 /** Which channel suits a payload of this size. */
 export function recommendChannel(byteLength: number): ChannelId {
-  if (byteLength <= CHANNELS.beacon.maxBytes) return 'beacon';
+  // Flash Beacon is temporarily disabled — real-world reception wasn't reliable
+  // enough yet. Left commented out so it's easy to bring back later.
+  // if (byteLength <= CHANNELS.beacon.maxBytes) return 'beacon';
   if (byteLength <= 24 * 1024) return 'qr';
   return 'grid';
 }

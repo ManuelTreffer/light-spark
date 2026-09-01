@@ -11,9 +11,11 @@ import { CHANNELS, recommendChannel, type BeamSource, type ChannelId } from '../
 import { estimate } from '../channels/estimate';
 import { QrBeamSource, QR_PRESETS } from '../channels/qr/sender';
 import { GridBeamSource } from '../channels/grid/sender';
-import { BeaconBeamSource, BEACON_PRESETS } from '../channels/beacon/sender';
+// Flash Beacon is temporarily disabled (see below) — real-world reception wasn't
+// reliable enough yet. Left commented out, not deleted, for future work.
+// import { BeaconBeamSource, BEACON_PRESETS } from '../channels/beacon/sender';
 import { GRID_PRESETS } from '../channels/grid/spec';
-import { MAX_BEACON_BYTES } from '../channels/beacon/codec';
+// import { MAX_BEACON_BYTES } from '../channels/beacon/codec';
 import { BeamStage } from './BeamStage';
 
 type Mode = 'text' | 'file';
@@ -68,7 +70,7 @@ export function SendView() {
   const size = active?.data.length ?? 0;
   const suggested = active ? recommendChannel(size) : null;
   const chosen = channel ?? suggested;
-  const beaconFits = size > 0 && size <= MAX_BEACON_BYTES && (active?.mime.startsWith('text/') ?? false);
+  // const beaconFits = size > 0 && size <= MAX_BEACON_BYTES && (active?.mime.startsWith('text/') ?? false);
 
   const plan = chosen && envelope ? estimate(chosen, presetIndex, envelope.length, size) : null;
 
@@ -77,11 +79,13 @@ export function SendView() {
     setProblem(null);
     try {
       setBeam(
-        chosen === 'beacon'
-          ? new BeaconBeamSource(active.data, BEACON_PRESETS[presetIndex])
-          : chosen === 'qr'
-            ? new QrBeamSource(envelope, QR_PRESETS[presetIndex])
-            : new GridBeamSource(envelope, GRID_PRESETS[presetIndex]),
+        // Flash Beacon disabled, see import above:
+        // chosen === 'beacon'
+        //   ? new BeaconBeamSource(active.data, BEACON_PRESETS[presetIndex])
+        //   :
+        chosen === 'qr'
+          ? new QrBeamSource(envelope, QR_PRESETS[presetIndex])
+          : new GridBeamSource(envelope, GRID_PRESETS[presetIndex]),
       );
     } catch (cause) {
       setProblem(cause instanceof Error ? cause.message : 'Senden fehlgeschlagen.');
@@ -145,9 +149,12 @@ export function SendView() {
         <section class="card">
           <div class="label">Wie soll es rüber?</div>
           <div class="channels">
-            {(['beacon', 'qr', 'grid'] as ChannelId[]).map((id) => {
+            {/* 'beacon' temporarily removed from the choices — see comments above */}
+            {(['qr', 'grid'] as ChannelId[]).map((id) => {
               const meta = CHANNELS[id];
-              const disabled = id === 'beacon' && !beaconFits;
+              // 'disabled' used to gate the beacon channel on payload size/type:
+              // const disabled = id === 'beacon' && !beaconFits;
+              const disabled = false;
               const time = envelope ? estimate(id, 1, envelope.length, size).seconds : null;
               return (
                 <button
@@ -231,6 +238,8 @@ export function SendView() {
 
 function presetsFor(channel: ChannelId): { label: string; hint: string }[] {
   if (channel === 'qr') return QR_PRESETS;
-  if (channel === 'grid') return GRID_PRESETS;
-  return BEACON_PRESETS;
+  // Flash Beacon disabled, see imports above — 'grid' was the remaining fallback case:
+  // if (channel === 'grid') return GRID_PRESETS;
+  // return BEACON_PRESETS;
+  return GRID_PRESETS;
 }
