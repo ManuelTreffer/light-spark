@@ -10,7 +10,9 @@ import { geometryFor, type GridSpec } from './spec';
  * costs nothing at all — the decoder simply waits for the next one.
  */
 
-function readBits(bytes: Uint8Array, bitOffset: number, count: number): number {
+/** Exported for reuse by tiles.ts, which packs a much smaller per-tile byte
+ * range into its own sub-rectangle of cells using the exact same scheme. */
+export function readBits(bytes: Uint8Array, bitOffset: number, count: number): number {
   let value = 0;
   for (let i = 0; i < count; i++) {
     const bit = bitOffset + i;
@@ -20,7 +22,7 @@ function readBits(bytes: Uint8Array, bitOffset: number, count: number): number {
   return value;
 }
 
-function writeBits(bytes: Uint8Array, bitOffset: number, count: number, value: number): void {
+export function writeBits(bytes: Uint8Array, bitOffset: number, count: number, value: number): void {
   for (let i = 0; i < count; i++) {
     const bit = bitOffset + i;
     const index = bit >> 3;

@@ -477,7 +477,8 @@ big-bang rename.
 | `core/base45.ts` | Kept as-is — QR-specific, orthogonal to the block/manifest work | stays in `channels/qr/` conceptually, currently in `core/` (fine either way) |
 | `channels/types.ts` | Extended, not replaced: `ChannelId`, `BeamSource`, `ChannelReceiver` are still the right shape; profile/quality-metric types (Milestone 6) get added here or in a new `channels/profile.ts` | `channels/` |
 | `channels/estimate.ts` | Reused; will need a v2-aware variant once block-based transfers change what "how long will this take" means | `channels/` |
-| `channels/qr/*`, `channels/grid/*` | Reused, additive changes only for v2 (new frame types layered in, no rewrite) | stays |
+| `channels/qr/*` | Reused, additive changes only for v2 (new frame types layered in, no rewrite) | stays |
+| `channels/grid/*` | Reused. `codec.ts` gained two exports (`readBits`/`writeBits`, unchanged behaviour) for `tiles.ts` to reuse; `render.ts`/`detect.ts`/`homography.ts` completely untouched — tiling (PR 4) is additive (`tiles.ts`, `fragmentAssembler.ts`), see §14 | stays |
 | `channels/beacon/*` | Untouched, stays disabled; out of scope for the whole Protocol v2 initiative (it has its own tiny format, no block/fountain concept applies) | stays |
 | `ui/SendView.tsx`, `ui/ReceiveView.tsx` | Heavy rework eventually (state moves into `SenderSession`/`ReceiverSession`), but **not in PR 1** | `ui/` (thinner, later) |
 | `ui/BeamStage.tsx`, `ui/PayloadPreview.tsx`, `ui/useCamera.ts` | Reused; `useCamera`'s capture loop is a candidate for the eventual `workers/` vision worker, not urgent | `ui/` (mostly), `vision/`+`workers/` (later) |
@@ -584,3 +585,78 @@ source; summarized here for continuity with this document's own numbering:
    PR 2).
 6. **Maximum total transfer size** the manifest is allowed to declare — no
    number exists yet; proposed in `protocol-v2.md` §4.
+
+---
+
+## 14. PR 4 — status: implemented
+
+*(Section numbering note: this PR branches directly off `main`, before PR 2
+and PR 3 — which each append their own status section to this same file —
+were merged, since Grid tiling has no dependency on `transfer/`/`storage/`
+at all. Merging all of PR 2/3/4 will likely produce a small, purely textual
+merge conflict right at this document's tail, where each PR independently
+appended its own section — trivial to resolve by keeping all three
+sections in whatever sequence they end up in; there is no source-code
+overlap between any of these PRs.)*
+
+Scope, per the roadmap's own PR 4 definition ("Tile-Layout, Tile-CRC,
+Fragmentassembler, Diagnoseoverlay") and Milestone 5's acceptance criteria:
+
+1. ✅ `src/channels/grid/tiles.ts`: `tileLayoutFor` (partitions the existing
+   `GridGeometry`'s data-cell rectangle into an arbitrary `tileRows ×
+   tileCols` grid, handling a non-even split the same "extra goes to some
+   tiles, not a special last one" way `evenSplit` documents),
+   `encodeTilePayload`/`decodeTilePayload` (per-tile header + CRC-32),
+   `writeTileIntoCells`/`readTileFromCells` (bit-packing a tile's payload
+   into/out of its cell rectangle, reusing `codec.ts`'s `readBits`/
+   `writeBits`, now exported for this purpose).
+2. ✅ `src/channels/grid/fragmentAssembler.ts`: `FrameFragmentAssembler` —
+   collects tiles by `tileSequence`, ignores duplicates, reassembles
+   regardless of arrival order, discards an inconsistent or over-budget
+   generation, bounds both the number of in-flight generations and one
+   generation's total byte budget, and independently re-verifies the
+   *reassembled frame's* CRC-32 on top of each tile's own. See ADR
+   `0006-spark-grid-tiling.md` for the fragmentation-vs-per-tile-droplet
+   capacity analysis and decision.
+3. ✅ `src/channels/grid/tileLoopback.test.ts`: a genuine render → simulated
+   camera → detect round-trip through the **unmodified**
+   `renderGrid`/`detectGrid` pipeline (proving tiling really is "just a
+   different interpretation of the same flat cell array", not a vision-layer
+   change) — clean capture, capture at an angle (perspective), and a
+   partial-occlusion test that blacks out roughly one tile's screen area and
+   confirms the *other* tiles still decode (unlike the monolithic format,
+   which would lose the entire frame to the same occlusion), then recovers
+   the full frame by feeding the occluded tile's original bytes back in on a
+   simulated retry.
+4. ✅ Unit tests: `tiles.test.ts` (12 — geometry coverage/evenness, a golden
+   vector, exhaustive truncation/corruption rejection, cells round-trip
+   isolation between tiles) and `fragmentAssembler.test.ts` (11 — in-order
+   and out-of-order reassembly, duplicate tiles, single-tile "occlusion" at
+   the data-structure level, multiple concurrent generations, capacity
+   eviction, inconsistent `tileCount` handling, frame-CRC rejection,
+   fragment-offset consistency checking).
+5. ❌ **Diagnoseoverlay (debug visualisation) — not in this PR**, despite
+   being in the roadmap's PR 4 bullet list. There is no live tiled-grid
+   render/detect path wired into any actual channel or UI screen yet (see
+   below) — nothing exists at runtime to overlay diagnostics onto. Building
+   the overlay now would mean designing it against a rendering pipeline
+   that doesn't exist yet in `GridBeamSource`/`GridReceiver`, which risks
+   getting the overlay's actual integration points wrong. Deferred to
+   whichever future PR wires tiling into a real sender/receiver, at which
+   point Milestone 8.4's overlay has a real pipeline to attach to.
+
+Explicitly **not** in PR 4, matching the pattern every prior PR in this
+initiative has followed: no wiring into `GridBeamSource`/`GridReceiver` or
+`SendView`/`ReceiveView` — real questions like "how many tiles per preset",
+"what fills unused tile slots", and "how does `tileSequence` advance across
+paints" are sender-policy decisions deliberately left to that future PR
+(see ADR 0006's consequences). `render.ts`, `detect.ts`, and
+`homography.ts` are unmodified; `codec.ts`'s only change is exporting two
+already-existing private functions.
+
+Definition of done, checked: `npx tsc --noEmit` clean, `npx vitest run`
+green (122/122 on top of this PR's `main`-based starting point — 96 prior
+plus 26 new), `npm run build` succeeds with an unchanged production bundle
+(none of the new files are imported by any UI or live-channel code). No
+lint step ran, same recorded reason as every prior PR
+(`protocol-v2.md` §6 item 4).
