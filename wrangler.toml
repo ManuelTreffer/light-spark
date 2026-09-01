@@ -1,3 +1,9 @@
 name = "light-spark"
 compatibility_date = "2026-09-01"
-pages_build_output_dir = "dist"
+
+# Cloudflare's dashboard "Connect to Git" flow created this as a Workers project
+# (deploy command `wrangler deploy`), not a classic Pages project (which would run
+# `wrangler pages deploy` and use `pages_build_output_dir` instead). This app has no
+# Worker script — it's deployed as a static-assets-only Worker, serving `dist/`.
+[assets]
+directory = "./dist"
